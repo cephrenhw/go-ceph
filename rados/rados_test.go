@@ -14,7 +14,19 @@ import (
 
 	"github.com/ceph/go-ceph/rados"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 )
+
+type RadosTestSuite struct {
+	suite.Suite
+	conn *rados.Conn
+}
+
+func (suite *RadosTestSuite) SetupTest() {
+	conn, err := rados.NewConn()
+	assert.NoError(suite.T(), err, "New connection")
+	suite.conn = conn
+}
 
 func GetUUID() string {
 	out, _ := exec.Command("uuidgen").Output()
@@ -28,53 +40,59 @@ func TestVersion(t *testing.T) {
 	assert.False(t, patch < 0 || patch > 1000, "invalid patch")
 }
 
-func TestGetSetConfigOption(t *testing.T) {
-	conn, _ := rados.NewConn()
-
+func (suite *RadosTestSuite) TestGetSetConfigOption() {
 	// rejects invalid options
-	err := conn.SetConfigOption("wefoijweojfiw", "welfkwjelkfj")
-	assert.Error(t, err, "Invalid option")
+	err := suite.conn.SetConfigOption("___dne___", "value")
+	assert.Error(suite.T(), err, "Invalid option")
 
 	// verify SetConfigOption changes a values
-	log_file_val, err := conn.GetConfigOption("log_file")
-	assert.NotEqual(t, log_file_val, "/dev/null")
+	prev_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	err = conn.SetConfigOption("log_file", "/dev/null")
-	assert.NoError(t, err, "Invalid option")
+	err = suite.conn.SetConfigOption("log_file", "/dev/null")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	log_file_val, err = conn.GetConfigOption("log_file")
-	assert.Equal(t, log_file_val, "/dev/null")
+	curr_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
+
+	assert.NotEqual(suite.T(), prev_val, "/dev/null")
+	assert.Equal(suite.T(), curr_val, "/dev/null")
 }
 
-func TestParseDefaultConfigEnv(t *testing.T) {
-	conn, _ := rados.NewConn()
+func (suite *RadosTestSuite) TestParseDefaultConfigEnv() {
+	prev_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	log_file_val, _ := conn.GetConfigOption("log_file")
-	assert.NotEqual(t, log_file_val, "/dev/null")
+	err = os.Setenv("CEPH_ARGS", "--log-file /dev/null")
+	assert.NoError(suite.T(), err)
 
-	err := os.Setenv("CEPH_ARGS", "--log-file /dev/null")
-	assert.NoError(t, err)
+	err = suite.conn.ParseDefaultConfigEnv()
+	assert.NoError(suite.T(), err)
 
-	err = conn.ParseDefaultConfigEnv()
-	assert.NoError(t, err)
+	curr_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	log_file_val, _ = conn.GetConfigOption("log_file")
-	assert.Equal(t, log_file_val, "/dev/null")
+	assert.NotEqual(suite.T(), prev_val, "/dev/null")
+	assert.Equal(suite.T(), curr_val, "/dev/null")
 }
 
-func TestParseCmdLineArgs(t *testing.T) {
-	conn, _ := rados.NewConn()
-	conn.ReadDefaultConfigFile()
+func (suite *RadosTestSuite) TestParseCmdLineArgs() {
+	prev_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	mon_host_val, _ := conn.GetConfigOption("mon_host")
-	assert.NotEqual(t, mon_host_val, "1.1.1.1")
+	args := []string{"--log_file", "/dev/null"}
+	err = suite.conn.ParseCmdLineArgs(args)
+	assert.NoError(suite.T(), err)
 
-	args := []string{"--mon-host", "1.1.1.1"}
-	err := conn.ParseCmdLineArgs(args)
-	assert.NoError(t, err)
+	curr_val, err := suite.conn.GetConfigOption("log_file")
+	assert.NoError(suite.T(), err, "Invalid option")
 
-	mon_host_val, _ = conn.GetConfigOption("mon_host")
-	assert.Equal(t, mon_host_val, "1.1.1.1")
+	assert.NotEqual(suite.T(), prev_val, "/dev/null")
+	assert.Equal(suite.T(), curr_val, "/dev/null")
+}
+
+func TestRadosTestSuite(t *testing.T) {
+	suite.Run(t, new(RadosTestSuite))
 }
 
 func TestGetClusterStats(t *testing.T) {
