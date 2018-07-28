@@ -19,8 +19,9 @@ import (
 
 type RadosTestSuite struct {
 	suite.Suite
-	conn *rados.Conn
-	pool string
+	conn  *rados.Conn
+	ioctx *rados.IOContext
+	pool  string
 }
 
 func (suite *RadosTestSuite) SetupSuite() {
@@ -36,12 +37,32 @@ func (suite *RadosTestSuite) SetupSuite() {
 	suite.pool = GetUUID()
 	err = conn.MakePool(suite.pool)
 	assert.NoError(suite.T(), err)
+
+	conn.Shutdown()
 }
 
+// Every test gets a fresh connection
 func (suite *RadosTestSuite) SetupTest() {
 	conn, err := rados.NewConn()
 	assert.NoError(suite.T(), err, "New connection")
 	suite.conn = conn
+
+	// TODO: test when this plus connect are omitted before opening the
+	// ioctx
+	err = conn.ReadDefaultConfigFile()
+	assert.NoError(suite.T(), err)
+
+	err = conn.Connect()
+	assert.NoError(suite.T(), err)
+
+	ioctx, err := conn.OpenIOContext(suite.pool)
+	assert.NoError(suite.T(), err)
+	suite.ioctx = ioctx
+}
+
+func (suite *RadosTestSuite) TearDownTest() {
+	suite.ioctx.Destroy()
+	suite.conn.Shutdown()
 }
 
 func (suite *RadosTestSuite) TearDownSuite() {
@@ -56,6 +77,8 @@ func (suite *RadosTestSuite) TearDownSuite() {
 
 	err = conn.DeletePool(suite.pool)
 	assert.NoError(suite.T(), err)
+
+	conn.Shutdown()
 }
 
 func GetUUID() string {
@@ -125,34 +148,23 @@ func TestRadosTestSuite(t *testing.T) {
 	suite.Run(t, new(RadosTestSuite))
 }
 
-func TestGetClusterStats(t *testing.T) {
-	conn, _ := rados.NewConn()
-	conn.ReadDefaultConfigFile()
-	conn.Connect()
-
-	poolname := GetUUID()
-	err := conn.MakePool(poolname)
-	assert.NoError(t, err)
-
-	pool, err := conn.OpenIOContext(poolname)
-	assert.NoError(t, err)
-
+func (suite *RadosTestSuite) TestGetClusterStats() {
 	// grab current stats
-	prev_stat, err := conn.GetClusterStats()
+	prev_stat, err := suite.conn.GetClusterStats()
 	fmt.Printf("prev_stat: %+v\n", prev_stat)
-	assert.NoError(t, err)
+	assert.NoError(suite.T(), err)
 
 	// make some changes to the cluster
 	buf := make([]byte, 1<<20)
 	for i := 0; i < 10; i++ {
 		objname := GetUUID()
-		pool.Write(objname, buf, 0)
+		suite.ioctx.Write(objname, buf, 0)
 	}
 
 	// wait a while for the stats to change
 	for i := 0; i < 30; i++ {
-		stat, err := conn.GetClusterStats()
-		assert.NoError(t, err)
+		stat, err := suite.conn.GetClusterStats()
+		assert.NoError(suite.T(), err)
 
 		// wait for something to change
 		if stat == prev_stat {
@@ -161,14 +173,11 @@ func TestGetClusterStats(t *testing.T) {
 		} else {
 			// success
 			fmt.Printf("curr_stat: %+v (change detected)\n", stat)
-			conn.Shutdown()
 			return
 		}
 	}
 
-	pool.Destroy()
-	conn.Shutdown()
-	t.Error("Cluster stats aren't changing")
+	suite.T().Error("Cluster stats aren't changing")
 }
 
 func TestGetFSID(t *testing.T) {
