@@ -20,12 +20,42 @@ import (
 type RadosTestSuite struct {
 	suite.Suite
 	conn *rados.Conn
+	pool string
+}
+
+func (suite *RadosTestSuite) SetupSuite() {
+	conn, err := rados.NewConn()
+	assert.NoError(suite.T(), err, "New connection")
+
+	err = conn.ReadDefaultConfigFile()
+	assert.NoError(suite.T(), err)
+
+	err = conn.Connect()
+	assert.NoError(suite.T(), err)
+
+	suite.pool = GetUUID()
+	err = conn.MakePool(suite.pool)
+	assert.NoError(suite.T(), err)
 }
 
 func (suite *RadosTestSuite) SetupTest() {
 	conn, err := rados.NewConn()
 	assert.NoError(suite.T(), err, "New connection")
 	suite.conn = conn
+}
+
+func (suite *RadosTestSuite) TearDownSuite() {
+	conn, err := rados.NewConn()
+	assert.NoError(suite.T(), err, "New connection")
+
+	err = conn.ReadDefaultConfigFile()
+	assert.NoError(suite.T(), err)
+
+	err = conn.Connect()
+	assert.NoError(suite.T(), err)
+
+	err = conn.DeletePool(suite.pool)
+	assert.NoError(suite.T(), err)
 }
 
 func GetUUID() string {
