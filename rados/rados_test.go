@@ -5,10 +5,11 @@ import (
 	"fmt"
 	//	"io"
 	//	"io/ioutil"
-	//	"net"
+	//"net"
 	"os"
 	"os/exec"
 	//"sort"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -23,10 +24,16 @@ type RadosTestSuite struct {
 	conn  *rados.Conn
 	ioctx *rados.IOContext
 	pool  string
+	count int
 }
 
-// Establish a connection to a Ceph cluster and create a new pool used for
-// subsequent tests in the suite.
+// TODO: add error checking or use pure go impl
+// TODO: use time and random int
+func GetUUID() string {
+	out, _ := exec.Command("uuidgen").Output()
+	return string(out[:36])
+}
+
 func (suite *RadosTestSuite) SetupSuite() {
 	conn, err := rados.NewConn()
 	require.NoError(suite.T(), err)
@@ -46,26 +53,46 @@ func (suite *RadosTestSuite) SetupSuite() {
 }
 
 func (suite *RadosTestSuite) SetupTest() {
+	suite.conn = nil
+	suite.ioctx = nil
+	suite.count = 0
+
 	conn, err := rados.NewConn()
 	require.NoError(suite.T(), err)
+	suite.conn = conn
+}
 
-	conn.ReadDefaultConfigFile()
-
-	if err = conn.Connect(); assert.NoError(suite.T(), err) {
-		ioctx, err := conn.OpenIOContext(suite.pool)
+func (suite *RadosTestSuite) SetupConnection() {
+	suite.conn.ReadDefaultConfigFile()
+	if err := suite.conn.Connect(); assert.NoError(suite.T(), err) {
+		ioctx, err := suite.conn.OpenIOContext(suite.pool)
 		if assert.NoError(suite.T(), err) {
-			suite.conn = conn
 			suite.ioctx = ioctx
 			return
 		}
 	}
-
-	conn.Shutdown()
+	suite.conn.Shutdown()
 	suite.T().FailNow()
 }
 
+func (suite *RadosTestSuite) GenObjectName() string {
+	name := fmt.Sprintf("%s_%d", suite.T().Name(), suite.count)
+	suite.count++
+	return name
+}
+
+func (suite *RadosTestSuite) RandomBytes(size int) []byte {
+	bytes := make([]byte, size)
+	n, err := rand.Read(bytes)
+	require.Equal(suite.T(), n, size)
+	require.NoError(suite.T(), err)
+	return bytes
+}
+
 func (suite *RadosTestSuite) TearDownTest() {
-	suite.ioctx.Destroy()
+	if suite.ioctx != nil {
+		suite.ioctx.Destroy()
+	}
 	suite.conn.Shutdown()
 }
 
@@ -82,17 +109,17 @@ func (suite *RadosTestSuite) TearDownSuite() {
 	}
 }
 
-// TODO: add error checking or use pure go impl
-func GetUUID() string {
-	out, _ := exec.Command("uuidgen").Output()
-	return string(out[:36])
-}
-
 func TestVersion(t *testing.T) {
 	var major, minor, patch = rados.Version()
 	assert.False(t, major < 0 || major > 1000, "invalid major")
 	assert.False(t, minor < 0 || minor > 1000, "invalid minor")
 	assert.False(t, patch < 0 || patch > 1000, "invalid patch")
+}
+
+func (suite *RadosTestSuite) TestGetFSID() {
+	fsid, err := suite.conn.GetFSID()
+	assert.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), fsid, "")
 }
 
 func (suite *RadosTestSuite) TestGetSetConfigOption() {
@@ -135,7 +162,7 @@ func (suite *RadosTestSuite) TestParseCmdLineArgs() {
 	prev_val, err := suite.conn.GetConfigOption("log_file")
 	assert.NoError(suite.T(), err, "Invalid option")
 
-	args := []string{"log_file", "/dev/null"}
+	args := []string{"--log_file", "/dev/null"}
 	err = suite.conn.ParseCmdLineArgs(args)
 	assert.NoError(suite.T(), err)
 
@@ -146,9 +173,9 @@ func (suite *RadosTestSuite) TestParseCmdLineArgs() {
 	assert.Equal(suite.T(), curr_val, "/dev/null")
 }
 
-// failing bc ioctx creation uses assert which then leads to a nil pointer for
-// suite.ioctx in here...
 func (suite *RadosTestSuite) TestGetClusterStats() {
+	suite.SetupConnection()
+
 	// grab current stats
 	prev_stat, err := suite.conn.GetClusterStats()
 	fmt.Printf("prev_stat: %+v\n", prev_stat)
@@ -157,7 +184,7 @@ func (suite *RadosTestSuite) TestGetClusterStats() {
 	// make some changes to the cluster
 	buf := make([]byte, 1<<20)
 	for i := 0; i < 10; i++ {
-		objname := GetUUID()
+		objname := suite.GenObjectName()
 		suite.ioctx.Write(objname, buf, 0)
 	}
 
@@ -180,31 +207,16 @@ func (suite *RadosTestSuite) TestGetClusterStats() {
 	suite.T().Error("Cluster stats aren't changing")
 }
 
-func (suite *RadosTestSuite) TestGetFSID() {
-	fsid, err := suite.conn.GetFSID()
-	assert.NoError(suite.T(), err)
-	assert.NotEqual(suite.T(), fsid, "")
+func (suite *RadosTestSuite) TestGetInstanceID() {
+	suite.SetupConnection()
+
+	id := suite.conn.GetInstanceID()
+	assert.NotEqual(suite.T(), id, 0)
 }
 
-func TestRadosTestSuite(t *testing.T) {
-	suite.Run(t, new(RadosTestSuite))
-}
-
-//func TestGetInstanceID(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	id := conn.GetInstanceID()
-//	assert.NotEqual(t, id, 0)
-//
-//	conn.Shutdown()
-//}
-//
-//func TestMakeDeletePool(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
+// TODO: do we need this test?
+//func (suite *RadosTestSuite) TestMakeDeletePool() {
+//	suite.SetupConnection()
 //
 //	// get current list of pool
 //	pools, err := conn.ListPools()
@@ -260,45 +272,17 @@ func TestRadosTestSuite(t *testing.T) {
 //	if found {
 //		t.Error("Deleted pool still exists")
 //	}
-//
-//	conn.Shutdown()
 //}
-//
-//func TestPingMonitor(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	// mon id that should work with vstart.sh
-//	reply, err := conn.PingMonitor("a")
-//	if err == nil {
-//		assert.NotEqual(t, reply, "")
-//		return
-//	}
-//
-//	// mon id that should work with micro-osd.sh
-//	reply, err = conn.PingMonitor("0")
-//	if err == nil {
-//		assert.NotEqual(t, reply, "")
-//		return
-//	}
-//
-//	// try to use a hostname as the monitor id
-//	mon_addr, _ := conn.GetConfigOption("mon_host")
-//	hosts, _ := net.LookupAddr(mon_addr)
-//	for _, host := range hosts {
-//		reply, err := conn.PingMonitor(host)
-//		if err == nil {
-//			assert.NotEqual(t, reply, "")
-//			return
-//		}
-//	}
-//
-//	t.Error("Could not find a valid monitor id")
-//
-//	conn.Shutdown()
-//}
-//
+
+func (suite *RadosTestSuite) TestPingMonitor() {
+	suite.SetupConnection()
+
+	// mon id that should work with vstart.sh
+	reply, err := suite.conn.PingMonitor("a")
+	assert.NoError(suite.T(), err)
+	assert.NotEqual(suite.T(), reply, "")
+}
+
 //func TestReadConfigFile(t *testing.T) {
 //	conn, _ := rados.NewConn()
 //
@@ -329,17 +313,13 @@ func TestRadosTestSuite(t *testing.T) {
 //	os.Remove(file.Name())
 //}
 //
-//func TestWaitForLatestOSDMap(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	err := conn.WaitForLatestOSDMap()
-//	assert.NoError(t, err)
-//
-//	conn.Shutdown()
-//}
-//
+func (suite *RadosTestSuite) TestWaitForLatestOSDMap() {
+	suite.SetupConnection()
+
+	err := suite.conn.WaitForLatestOSDMap()
+	assert.NoError(suite.T(), err)
+}
+
 //func TestReadWrite(t *testing.T) {
 //	conn, _ := rados.NewConn()
 //	conn.ReadDefaultConfigFile()
@@ -377,63 +357,46 @@ func TestRadosTestSuite(t *testing.T) {
 //	conn.Shutdown()
 //}
 //
-//func TestAppend(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	// make pool
-//	pool_name := GetUUID()
-//	err := conn.MakePool(pool_name)
-//	assert.NoError(t, err)
-//
-//	pool, err := conn.OpenIOContext(pool_name)
-//	assert.NoError(t, err)
-//
-//	bytes_accum := []byte{}
-//	for _, str_in := range []string{"input", " ", "another", " ", "data"} {
-//		bytes_in := []byte(str_in)
-//		err = pool.Append("obj", bytes_in)
-//		assert.NoError(t, err)
-//
-//		bytes_accum = append(bytes_accum, bytes_in...)
-//		bytes_out := make([]byte, len(bytes_accum))
-//		n_out, err := pool.Read("obj", bytes_out, 0)
-//
-//		assert.NoError(t, err)
-//		assert.Equal(t, n_out, len(bytes_accum))
-//		assert.Equal(t, bytes_accum, bytes_out)
-//	}
-//
-//	pool.Destroy()
-//	conn.Shutdown()
-//}
-//
-//func TestNotFound(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	// make pool
-//	pool_name := GetUUID()
-//	err := conn.MakePool(pool_name)
-//	assert.NoError(t, err)
-//
-//	pool, err := conn.OpenIOContext(pool_name)
-//	assert.NoError(t, err)
-//
-//	size := 128
-//	bytes_out := make([]byte, size)
-//	_, err = pool.Read("obj", bytes_out, 0)
-//	assert.Equal(t, err, rados.RadosErrorNotFound)
-//
-//	err = pool.Delete("obj")
-//	assert.Equal(t, err, rados.RadosErrorNotFound)
-//
-//	pool.Destroy()
-//	conn.Shutdown()
-//}
-//
+func (suite *RadosTestSuite) TestAppend() {
+	suite.SetupConnection()
+
+	mirror := []byte{}
+	oid := suite.GenObjectName()
+	for i := 0; i < 3; i++ {
+		// append random bytes
+		bytes := suite.RandomBytes(33)
+		err := suite.ioctx.Append(oid, bytes)
+		assert.NoError(suite.T(), err)
+
+		// what the object should contain
+		mirror = append(mirror, bytes...)
+
+		// check object contains what we expect
+		buf := make([]byte, len(mirror))
+		n, err := suite.ioctx.Read(oid, buf, 0)
+		assert.NoError(suite.T(), err)
+		assert.Equal(suite.T(), n, len(buf))
+		assert.Equal(suite.T(), buf, mirror)
+	}
+}
+
+func (suite *RadosTestSuite) TestReadNotFound() {
+	suite.SetupConnection()
+
+	var bytes []byte
+	oid := suite.GenObjectName()
+	_, err := suite.ioctx.Read(oid, bytes, 0)
+	assert.Equal(suite.T(), err, rados.RadosErrorNotFound)
+}
+
+func (suite *RadosTestSuite) TestDeleteNotFound() {
+	suite.SetupConnection()
+
+	oid := suite.GenObjectName()
+	err := suite.ioctx.Delete(oid)
+	assert.Equal(suite.T(), err, rados.RadosErrorNotFound)
+}
+
 //func TestObjectStat(t *testing.T) {
 //	conn, _ := rados.NewConn()
 //	conn.ReadDefaultConfigFile()
@@ -1198,3 +1161,7 @@ func TestRadosTestSuite(t *testing.T) {
 //	_, err = pool.GetAllOmapValues(objname, "", "", 100)
 //	assert.Equal(t, err, rados.RadosErrorNotFound)
 //}
+
+func TestRadosTestSuite(t *testing.T) {
+	suite.Run(t, new(RadosTestSuite))
+}
