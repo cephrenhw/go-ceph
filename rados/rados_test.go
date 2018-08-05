@@ -397,33 +397,27 @@ func (suite *RadosTestSuite) TestDeleteNotFound() {
 	assert.Equal(suite.T(), err, rados.RadosErrorNotFound)
 }
 
-//func TestObjectStat(t *testing.T) {
-//	conn, _ := rados.NewConn()
-//	conn.ReadDefaultConfigFile()
-//	conn.Connect()
-//
-//	pool_name := GetUUID()
-//	err := conn.MakePool(pool_name)
-//	assert.NoError(t, err)
-//
-//	pool, err := conn.OpenIOContext(pool_name)
-//	assert.NoError(t, err)
-//
-//	bytes_in := []byte("input data")
-//	err = pool.Write("obj", bytes_in, 0)
-//	assert.NoError(t, err)
-//
-//	stat, err := pool.Stat("obj")
-//	assert.Equal(t, uint64(len(bytes_in)), stat.Size)
-//	assert.NotNil(t, stat.ModTime)
-//
-//	_, err = pool.Stat("notfound")
-//	assert.Equal(t, err, rados.RadosErrorNotFound)
-//
-//	pool.Destroy()
-//	conn.Shutdown()
-//}
-//
+func (suite *RadosTestSuite) TestStatNotFound() {
+	suite.SetupConnection()
+
+	oid := suite.GenObjectName()
+	_, err := suite.ioctx.Stat(oid)
+	assert.Equal(suite.T(), err, rados.RadosErrorNotFound)
+}
+
+func (suite *RadosTestSuite) TestObjectStat() {
+	suite.SetupConnection()
+
+	oid := suite.GenObjectName()
+	bytes := suite.RandomBytes(234)
+	err := suite.ioctx.Write(oid, bytes, 0)
+	assert.NoError(suite.T(), err)
+
+	stat, err := suite.ioctx.Stat(oid)
+	assert.Equal(suite.T(), uint64(len(bytes)), stat.Size)
+	assert.NotNil(suite.T(), stat.ModTime)
+}
+
 //func TestGetPoolStats(t *testing.T) {
 //	conn, _ := rados.NewConn()
 //	conn.ReadDefaultConfigFile()
